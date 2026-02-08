@@ -1,6 +1,6 @@
 # Vektopay Go SDK
 
-Go SDK for Vektopay API (server-side). Supports transactions (checkout), charges, checkout sessions, and charge status polling.
+Go SDK for Vektopay API (server-side). Supports payments, checkout sessions, and payment status polling.
 
 ## Install
 
@@ -14,19 +14,19 @@ go get github.com/vektopay/vektopay-go-sdk
 client := vektopay.NewClient(os.Getenv("VEKTOPAY_API_KEY"), "https://api.vektopay.com")
 ```
 
-## Create Transaction (API Checkout)
+## Create Payment (Recommended)
 
 ```go
-transaction, err := client.CreateTransaction(vektopay.TransactionInput{
-  CustomerID: "cust_123",
-  Items: []vektopay.TransactionItemInput{
+payment, err := client.CreatePayment(vektopay.PaymentInput{
+  CustomerID: func() *string { v := "cust_123"; return &v }(),
+  Items: []vektopay.PaymentItemInput{
     { PriceID: "price_basic", Quantity: 1 },
   },
   CouponCode: func() *string { v := "OFF10"; return &v }(),
-  PaymentMethod: vektopay.TransactionPaymentMethodInput{
+  PaymentMethod: vektopay.PaymentMethodInput{
     Type: "credit_card",
-    Token: "ev:tk_123",
-    Installments: 1,
+    Token: func() *string { v := "ev:tk_123"; return &v }(),
+    Installments: func() *int { v := 1; return &v }(),
   },
 })
 ```
@@ -98,10 +98,10 @@ session, err := client.CreateCheckoutSession(vektopay.CheckoutSessionInput{
 })
 ```
 
-## Poll Charge Status
+## Poll Payment Status
 
 ```go
-status, err := client.PollChargeStatus(charge.ID, 3*time.Second, 2*time.Minute)
+status, err := client.PollPaymentStatus(payment.PaymentID, 3*time.Second, 2*time.Minute)
 ```
 
 ## Notes

@@ -14,6 +14,7 @@ type Client struct {
   APIKey        string
   BaseURL       string
   DefaultHeader map[string]string
+  BearerToken   string
   httpClient    *http.Client
 }
 
@@ -22,43 +23,94 @@ func NewClient(apiKey, baseURL string) *Client {
     APIKey:        apiKey,
     BaseURL:       trimSlash(baseURL),
     DefaultHeader: map[string]string{},
+    BearerToken:   "",
     httpClient:    &http.Client{Timeout: 30 * time.Second},
   }
 }
 
-func (c *Client) CreateCharge(input ChargeInput) (*ChargeResponse, error) {
-  body := map[string]any{
-    "customer_id": input.CustomerID,
-    "card_id":     input.CardID,
-    "amount":      input.Amount,
-    "currency":    input.Currency,
-    "installments": input.Installments,
-    "country":     input.Country,
-    "metadata":    input.Metadata,
-    "price_id":    input.PriceID,
-  }
-  var resp ChargeResponse
-  err := c.post("/v1/charges", body, input.IdempotencyKey, &resp)
+func (c *Client) CreatePayment(input PaymentInput) (*PaymentCreateResponse, error) {
+  var resp PaymentCreateResponse
+  err := c.post("/v1/payments", input, "", &resp)
   return &resp, err
+}
+
+func (c *Client) GetPaymentStatus(id string) (*PaymentStatusResponse, error) {
+  var resp PaymentStatusResponse
+  err := c.get("/v1/payments/"+id+"/status", &resp)
+  return &resp, err
+}
+
+func (c *Client) PollPaymentStatus(paymentID string, interval, timeout time.Duration) (*PaymentStatusResponse, error) {
+  started := time.Now()
+  for {
+    if time.Since(started) > timeout {
+      return nil, errors.New("poll_timeout")
+    }
+    status, err := c.GetPaymentStatus(paymentID)
+    if err != nil {
+      return nil, err
+    }
+    if status.Status == "PAID" || status.Status == "FAILED" || status.Status == "CANCELED" {
+      return status, nil
+    }
+    time.Sleep(interval)
+  }
+}
+
+func (c *Client) CreateCharge(input ChargeInput) (*ChargeResponse, error) {
+  // Legacy alias: `/v1/charges` is deprecated; map to `/v1/payments`.
+  payment, err := c.CreatePayment(PaymentInput{
+    CustomerID: &input.CustomerID,
+    Amount:     &input.Amount,
+    Currency:   &input.Currency,
+    PaymentMethod: PaymentMethodInput{
+      Type:         "credit_card",
+      CardID:       &input.CardID,
+      Installments: input.Installments,
+    },
+  })
+  if err != nil {
+    return nil, err
+  }
+  return &ChargeResponse{
+    ID:     payment.PaymentID,
+    Status: payment.Status,
+    Challenge: payment.Challenge,
+  }, nil
 }
 
 func (c *Client) CreateTransaction(input TransactionInput) (*TransactionResponse, error) {
-  body := map[string]any{
-    "customer_id": input.CustomerID,
-    "items":       input.Items,
-    "coupon_code": input.CouponCode,
-    "payment_method": map[string]any{
-      "type":         input.PaymentMethod.Type,
-      "token":        input.PaymentMethod.Token,
-      "installments": input.PaymentMethod.Installments,
-    },
+  // Legacy alias: `/v1/transactions` is deprecated; map to `/v1/payments`.
+  items := make([]PaymentItemInput, 0, len(input.Items))
+  for _, it := range input.Items {
+    items = append(items, PaymentItemInput{PriceID: it.PriceID, Quantity: it.Quantity})
   }
-  var resp TransactionResponse
-  err := c.post("/v1/transactions", body, "", &resp)
-  return &resp, err
+  payment, err := c.CreatePayment(PaymentInput{
+    CustomerID: &input.CustomerID,
+    Items:      items,
+    CouponCode: input.CouponCode,
+    PaymentMethod: PaymentMethodInput{
+      Type:         input.PaymentMethod.Type,
+      Token:        &input.PaymentMethod.Token,
+      Installments: &input.PaymentMethod.Installments,
+    },
+  })
+  if err != nil {
+    return nil, err
+  }
+  return &TransactionResponse{
+    ID:            payment.PaymentID,
+    Status:        payment.Status,
+    PaymentStatus: payment.PaymentStatus,
+    Amount:        payment.Amount,
+    Currency:      payment.Currency,
+  }, nil
 }
 
 func (c *Client) CreateCustomer(input CustomerCreateInput) (*CustomerCreateResponse, error) {
+  if c.BearerToken == "" {
+    return nil, errors.New("bearer_token_required")
+  }
   body := map[string]any{
     "merchant_id": input.MerchantID,
     "external_id": input.ExternalID,
@@ -68,11 +120,14 @@ func (c *Client) CreateCustomer(input CustomerCreateInput) (*CustomerCreateRespo
     "doc_number":  input.DocNumber,
   }
   var resp CustomerCreateResponse
-  err := c.post("/v1/customers", body, "", &resp)
+  err := c.postBearer("/v1/customers", body, &resp)
   return &resp, err
 }
 
 func (c *Client) UpdateCustomer(id string, input CustomerUpdateInput) (*CustomerResponse, error) {
+  if c.BearerToken == "" {
+    return nil, errors.New("bearer_token_required")
+  }
   body := map[string]any{}
   if input.MerchantID != nil {
     body["merchant_id"] = *input.MerchantID
@@ -93,29 +148,38 @@ func (c *Client) UpdateCustomer(id string, input CustomerUpdateInput) (*Customer
     body["doc_number"] = *input.DocNumber
   }
   var resp CustomerResponse
-  err := c.put("/v1/customers/"+id, body, &resp)
+  err := c.putBearer("/v1/customers/"+id, body, &resp)
   return &resp, err
 }
 
 func (c *Client) ListCustomers(params CustomerListParams) (*[]CustomerResponse, error) {
+  if c.BearerToken == "" {
+    return nil, errors.New("bearer_token_required")
+  }
   query := buildQuery(map[string]string{
     "merchant_id": valueOrEmpty(params.MerchantID),
     "limit":       intOrEmpty(params.Limit),
     "offset":      intOrEmpty(params.Offset),
   })
   var resp []CustomerResponse
-  err := c.get("/v1/customers"+query, &resp)
+  err := c.getBearer("/v1/customers"+query, &resp)
   return &resp, err
 }
 
 func (c *Client) GetCustomer(id string) (*CustomerResponse, error) {
+  if c.BearerToken == "" {
+    return nil, errors.New("bearer_token_required")
+  }
   var resp CustomerResponse
-  err := c.get("/v1/customers/"+id, &resp)
+  err := c.getBearer("/v1/customers/"+id, &resp)
   return &resp, err
 }
 
 func (c *Client) DeleteCustomer(id string) error {
-  return c.del("/v1/customers/" + id)
+  if c.BearerToken == "" {
+    return errors.New("bearer_token_required")
+  }
+  return c.delBearer("/v1/customers/" + id)
 }
 
 func (c *Client) CreateCheckoutSession(input CheckoutSessionInput) (*CheckoutSessionResponse, error) {
@@ -123,6 +187,8 @@ func (c *Client) CreateCheckoutSession(input CheckoutSessionInput) (*CheckoutSes
     "customer_id":        input.CustomerID,
     "amount":             input.Amount,
     "currency":           input.Currency,
+    "price_id":           input.PriceID,
+    "quantity":           input.Quantity,
     "expires_in_seconds": input.ExpiresInSeconds,
     "success_url":        input.SuccessURL,
     "cancel_url":         input.CancelURL,
@@ -139,20 +205,11 @@ func (c *Client) CreateCheckoutSession(input CheckoutSessionInput) (*CheckoutSes
 }
 
 func (c *Client) PollChargeStatus(transactionID string, interval, timeout time.Duration) (*ChargeStatusResponse, error) {
-  started := time.Now()
-  for {
-    if time.Since(started) > timeout {
-      return nil, errors.New("poll_timeout")
-    }
-    var resp ChargeStatusResponse
-    if err := c.get("/v1/charges/"+transactionID+"/status", &resp); err != nil {
-      return nil, err
-    }
-    if resp.Status == "PAID" || resp.Status == "FAILED" {
-      return &resp, nil
-    }
-    time.Sleep(interval)
+  status, err := c.PollPaymentStatus(transactionID, interval, timeout)
+  if err != nil {
+    return nil, err
   }
+  return &ChargeStatusResponse{ID: status.ID, Status: status.Status}, nil
 }
 
 func (c *Client) post(path string, body map[string]any, idempotencyKey string, out any) error {
@@ -163,6 +220,27 @@ func (c *Client) post(path string, body map[string]any, idempotencyKey string, o
   if idempotencyKey != "" {
     req.Header.Set("idempotency-key", idempotencyKey)
   }
+  for k, v := range c.DefaultHeader {
+    req.Header.Set(k, v)
+  }
+  res, err := c.httpClient.Do(req)
+  if err != nil {
+    return err
+  }
+  defer res.Body.Close()
+  if res.StatusCode >= 300 {
+    var errPayload map[string]any
+    _ = json.NewDecoder(res.Body).Decode(&errPayload)
+    return fmt.Errorf("request_failed_%d", res.StatusCode)
+  }
+  return json.NewDecoder(res.Body).Decode(out)
+}
+
+func (c *Client) postBearer(path string, body map[string]any, out any) error {
+  payload, _ := json.Marshal(body)
+  req, _ := http.NewRequest("POST", c.BaseURL+path, bytes.NewReader(payload))
+  req.Header.Set("content-type", "application/json")
+  req.Header.Set("authorization", "Bearer "+c.BearerToken)
   for k, v := range c.DefaultHeader {
     req.Header.Set(k, v)
   }
@@ -200,6 +278,27 @@ func (c *Client) put(path string, body map[string]any, out any) error {
   return json.NewDecoder(res.Body).Decode(out)
 }
 
+func (c *Client) putBearer(path string, body map[string]any, out any) error {
+  payload, _ := json.Marshal(body)
+  req, _ := http.NewRequest("PUT", c.BaseURL+path, bytes.NewReader(payload))
+  req.Header.Set("content-type", "application/json")
+  req.Header.Set("authorization", "Bearer "+c.BearerToken)
+  for k, v := range c.DefaultHeader {
+    req.Header.Set(k, v)
+  }
+  res, err := c.httpClient.Do(req)
+  if err != nil {
+    return err
+  }
+  defer res.Body.Close()
+  if res.StatusCode >= 300 {
+    var errPayload map[string]any
+    _ = json.NewDecoder(res.Body).Decode(&errPayload)
+    return fmt.Errorf("request_failed_%d", res.StatusCode)
+  }
+  return json.NewDecoder(res.Body).Decode(out)
+}
+
 func (c *Client) del(path string) error {
   req, _ := http.NewRequest("DELETE", c.BaseURL+path, nil)
   req.Header.Set("x-api-key", c.APIKey)
@@ -217,9 +316,43 @@ func (c *Client) del(path string) error {
   return nil
 }
 
+func (c *Client) delBearer(path string) error {
+  req, _ := http.NewRequest("DELETE", c.BaseURL+path, nil)
+  req.Header.Set("authorization", "Bearer "+c.BearerToken)
+  for k, v := range c.DefaultHeader {
+    req.Header.Set(k, v)
+  }
+  res, err := c.httpClient.Do(req)
+  if err != nil {
+    return err
+  }
+  defer res.Body.Close()
+  if res.StatusCode >= 300 {
+    return fmt.Errorf("request_failed_%d", res.StatusCode)
+  }
+  return nil
+}
+
 func (c *Client) get(path string, out any) error {
   req, _ := http.NewRequest("GET", c.BaseURL+path, nil)
   req.Header.Set("x-api-key", c.APIKey)
+  for k, v := range c.DefaultHeader {
+    req.Header.Set(k, v)
+  }
+  res, err := c.httpClient.Do(req)
+  if err != nil {
+    return err
+  }
+  defer res.Body.Close()
+  if res.StatusCode >= 300 {
+    return fmt.Errorf("request_failed_%d", res.StatusCode)
+  }
+  return json.NewDecoder(res.Body).Decode(out)
+}
+
+func (c *Client) getBearer(path string, out any) error {
+  req, _ := http.NewRequest("GET", c.BaseURL+path, nil)
+  req.Header.Set("authorization", "Bearer "+c.BearerToken)
   for k, v := range c.DefaultHeader {
     req.Header.Set(k, v)
   }

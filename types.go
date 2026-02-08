@@ -1,5 +1,53 @@
 package vektopay
 
+type PaymentMethodInput struct {
+  Type         string `json:"type"`
+  Token        *string `json:"token,omitempty"`
+  CardID       *string `json:"card_id,omitempty"`
+  CvcToken     *string `json:"cvc_token,omitempty"`
+  Installments *int    `json:"installments,omitempty"`
+}
+
+type PaymentCustomerInput struct {
+  ExternalID string  `json:"external_id"`
+  Name       *string `json:"name,omitempty"`
+  Email      *string `json:"email,omitempty"`
+  DocType    string  `json:"doc_type"`
+  DocNumber  string  `json:"doc_number"`
+}
+
+type PaymentItemInput struct {
+  PriceID  string `json:"price_id"`
+  Quantity int    `json:"quantity"`
+}
+
+type PaymentInput struct {
+  CustomerID    *string              `json:"customer_id,omitempty"`
+  Customer      *PaymentCustomerInput `json:"customer,omitempty"`
+  Items         []PaymentItemInput   `json:"items,omitempty"`
+  Amount        *int                 `json:"amount,omitempty"`
+  Currency      *string              `json:"currency,omitempty"`
+  CouponCode    *string              `json:"coupon_code,omitempty"`
+  Mode          *string              `json:"mode,omitempty"`
+  WebhookURL    *string              `json:"webhook_url,omitempty"`
+  PaymentMethod PaymentMethodInput   `json:"payment_method"`
+}
+
+type PaymentCreateResponse struct {
+  PaymentID      string             `json:"payment_id"`
+  Status         string             `json:"status"`
+  PaymentStatus  *string            `json:"payment_status,omitempty"`
+  SubscriptionID *string            `json:"subscription_id,omitempty"`
+  Amount         *int               `json:"amount,omitempty"`
+  Currency       *string            `json:"currency,omitempty"`
+  Challenge      map[string]string  `json:"challenge,omitempty"`
+}
+
+type PaymentStatusResponse struct {
+  ID     string `json:"id"`
+  Status string `json:"status"`
+}
+
 type ChargeInput struct {
   CustomerID     string                 `json:"customer_id"`
   CardID         string                 `json:"card_id"`
@@ -95,6 +143,8 @@ type CheckoutSessionInput struct {
   CustomerID       string `json:"customer_id"`
   Amount           int    `json:"amount"`
   Currency         string `json:"currency"`
+  PriceID          *string `json:"price_id,omitempty"`
+  Quantity         *int    `json:"quantity,omitempty"`
   ExpiresInSeconds *int   `json:"expires_in_seconds,omitempty"`
   SuccessURL       *string `json:"success_url,omitempty"`
   CancelURL        *string `json:"cancel_url,omitempty"`
@@ -103,5 +153,5 @@ type CheckoutSessionInput struct {
 type CheckoutSessionResponse struct {
   ID        string `json:"id"`
   Token     string `json:"token"`
-  ExpiresAt string `json:"expires_at"`
+  ExpiresAt any    `json:"expires_at"`
 }
